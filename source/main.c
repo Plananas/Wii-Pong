@@ -3,120 +3,122 @@
 #include <malloc.h>
 #include <gccore.h>
 #include <wiiuse/wpad.h>
+#include <grrlib.h>
+#include <ogc/system.h>  // Add this include at the top
 
-static void *xfb = NULL;
-static GXRModeObj *rmode = NULL;
-static u8 *fifo = NULL;
+#define PADDLE_WIDTH  10.0f
+#define PADDLE_HEIGHT 60.0f
+#define SCREEN_HEIGHT 480
+#define PADDLE_SPEED 5.0f
+#define BALL_SIZE 10.0f
 
-#define FIFO_SIZE (256 * 1024)
+// Game state variables
+f32 left_paddle_y, right_paddle_y;
+f32 ball_x, ball_y, ball_dx, ball_dy;
 
 void initialize_graphics() {
-    // Initialize video and input
-    VIDEO_Init();
-    WPAD_Init();
-    
-    // Get video mode and allocate framebuffer
-    rmode = VIDEO_GetPreferredMode(NULL);
-    xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
-    
-    // Configure video
-    VIDEO_Configure(rmode);
-    VIDEO_SetNextFramebuffer(xfb);
-    VIDEO_SetBlack(FALSE);
-    VIDEO_Flush();
-    VIDEO_WaitVSync();
-    
-    if (rmode->viTVMode & VI_NON_INTERLACE)
-        VIDEO_WaitVSync();
-    
-    // Allocate and initialize GX
-    fifo = memalign(32, FIFO_SIZE);
-    GX_Init(fifo, FIFO_SIZE);
-    
-    // Setup GX rendering
-    GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
-    GX_SetScissor(0, 0, rmode->fbWidth, rmode->efbHeight);
-    GX_SetDispCopyYScale((f32)rmode->xfbHeight / (f32)rmode->efbHeight);
-    GX_SetDispCopySrc(0, 0, rmode->fbWidth, rmode->efbHeight);
-    GX_SetDispCopyDst(rmode->fbWidth, rmode->xfbHeight);
-    GX_SetCopyFilter(rmode->aa, rmode->sample_pattern, GX_TRUE, rmode->vfilter);
-    GX_SetFieldMode(rmode->field_rendering, ((rmode->viHeight == 2 * rmode->xfbHeight) ? GX_ENABLE : GX_DISABLE));
-    GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);
-    GX_SetColorUpdate(GX_TRUE);
-    GX_SetAlphaUpdate(GX_TRUE);
-    
-    // Setup vertex format for drawing
-    GX_SetNumChans(1);
-    GX_SetNumTexGens(0);
-    GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
-    GX_SetNumTevStages(1);
-    GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
-    GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
-    GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XY, GX_F32, 0);
-    GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
-    
-    // Setup matrices for 2D rendering
-    Mtx44 perspective;
-    guOrtho(perspective, 0, 479, 0, 639, 0, 300);
-    GX_LoadProjectionMtx(perspective, GX_ORTHOGRAPHIC);
+    GRRLIB_Init();
 }
 
-void draw_square(float x, float y, float size) {
-    GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
+void draw_paddle(f32 x, f32 y) {
+    GRRLIB_Rectangle(x, y, PADDLE_WIDTH, PADDLE_HEIGHT, 0xFFFFFFFF, true);
+}
+
+void draw_ball(f32 x, f32 y) {
+    GRRLIB_Rectangle(x, y, BALL_SIZE, BALL_SIZE, 0xFFFFFFFF, true);
+}
+
+void draw_objects() {
+    draw_paddle(100, left_paddle_y);   // Left Paddle
+    draw_paddle(500, right_paddle_y);  // Right Paddle
+    draw_ball(ball_x, ball_y);
+}
+
+void initialize_objects() {
+    left_paddle_y = 200;
+    right_paddle_y = 200;
+    ball_x = 320;
+    ball_y = 240;
+    ball_dx = 3;
+    ball_dy = 2;
+
+    draw_paddle(100, (int) left_paddle_y);   // Left Paddle
+    draw_paddle(500, (int) right_paddle_y);  // Right Paddle
+    draw_ball((int)ball_x, (int)ball_y);
     
-    GX_Position2f32(x, y);
-    GX_Color4u8(255, 0, 0, 255);  // Red
-    
-    GX_Position2f32(x + size, y);
-    GX_Color4u8(255, 0, 0, 255);
-    
-    GX_Position2f32(x + size, y + size);
-    GX_Color4u8(255, 0, 0, 255);
-    
-    GX_Position2f32(x, y + size);
-    GX_Color4u8(255, 0, 0, 255);
-    
-    GX_End();
+}
+
+void update_ball() {
+    ball_x += ball_dx;
+    ball_y += ball_dy;
+
+    // Bounce off top and bottom
+    if (ball_y <= 0 || ball_y >= SCREEN_HEIGHT - BALL_SIZE) {
+        ball_dy = -ball_dy;
+    }
+    // Bounce off left and right
+    if (ball_x <= 0 || ball_x >= 640 - BALL_SIZE) {
+        ball_dx = -ball_dx;
+    }
+    // Paddle collision (example for left paddle)
+    if (ball_x <= 110 && ball_x >= 100 && ball_y + BALL_SIZE >= left_paddle_y && ball_y <= left_paddle_y + PADDLE_HEIGHT) {
+        ball_dx = -ball_dx;
+        ball_x = 110;
+    }
 }
 
 int main() {
+    VIDEO_Init();
+    WPAD_Init();
     initialize_graphics();
-    
-    // Main loop
+    initialize_objects();
+
     while (1) {
         WPAD_ScanPads();
+        u32 held = WPAD_ButtonsHeld(0);
         u32 pressed = WPAD_ButtonsDown(0);
-        
-        if (pressed & WPAD_BUTTON_HOME)
-            break;
-        
-        // Clear screen to blue
-        GX_SetCopyClear((GXColor){20, 20, 30, 255}, GX_MAX_Z24);
-        
-        // Setup for drawing
-        GX_InvalidateTexAll();
-        GX_ClearVtxDesc();
-        GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
-        GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
-        GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XY, GX_F32, 0);
-        GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
-        
-        // Set matrices
-        Mtx modelview;
-        guMtxIdentity(modelview);
-        GX_LoadPosMtxImm(modelview, GX_PNMTX0);
-        
-        // Draw red square in center
 
-        draw_square(295, 215, 50);
-        
-        // Finish frame
-        GX_DrawDone();
-        GX_CopyDisp(xfb, GX_TRUE);
-        VIDEO_SetNextFramebuffer(xfb);
-        VIDEO_Flush();
+        if (pressed & WPAD_BUTTON_HOME) {
+            GRRLIB_Exit();           // Clean up graphics
+            SYS_ResetSystem(SYS_RETURNTOMENU, 0, 0); // Return to loader/menu
+        }
+
+        // Player 1 (Left paddle) movement
+        if (held & WPAD_BUTTON_UP)
+            left_paddle_y -= PADDLE_SPEED;
+        if (held & WPAD_BUTTON_DOWN)
+            left_paddle_y += PADDLE_SPEED;
+
+        // Player 2 (Right paddle) movement
+        if (held & WPAD_BUTTON_PLUS)
+            right_paddle_y -= PADDLE_SPEED;
+        if (held & WPAD_BUTTON_MINUS)
+            right_paddle_y += PADDLE_SPEED;
+
+        // Clamp paddle positions within screen bounds
+        if (left_paddle_y < 0)
+            left_paddle_y = 0;
+        if (left_paddle_y > SCREEN_HEIGHT - PADDLE_HEIGHT)
+            left_paddle_y = SCREEN_HEIGHT - PADDLE_HEIGHT;
+
+        if (right_paddle_y < 0)
+            right_paddle_y = 0;
+        if (right_paddle_y > SCREEN_HEIGHT - PADDLE_HEIGHT)
+            right_paddle_y = SCREEN_HEIGHT - PADDLE_HEIGHT;
+
+        GRRLIB_FillScreen(0x141414FF);  // Dark gray background
+
+
+        // Ball Logic
+        // Update ball position
+        update_ball();
+        draw_objects();
+
+        GRRLIB_Render();
         VIDEO_WaitVSync();
     }
-    
+
+    GRRLIB_Exit();
+    YS_ResetSystem(SYS_RETURNTOMENU, 0, 0); // Return to loader/menu
     return 0;
 }
